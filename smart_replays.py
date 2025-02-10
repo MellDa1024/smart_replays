@@ -275,6 +275,8 @@ class PropertiesNames:
     TXT_FILENAME_FORMAT_ERR = "filename_format_err"
     PROP_SAVE_TO_FOLDER = "save_to_folder"
 
+    PROP_NOTIFICATION_ON_RECORD_START = "notification_on_record_start"
+    PROP_NOTIFICATION_ON_RECORD_START_PATH = "notification_on_record_start_file"
     PROP_NOTIFICATION_ON_SUCCESS = "notification_on_success"
     PROP_NOTIFICATION_ON_SUCCESS_PATH = "notification_on_success_file"
     PROP_NOTIFICATION_ON_FAILURE = "notification_on_failure"
@@ -472,6 +474,20 @@ Example: 00, 01, …, 53</td></tr>
     )
 
     # ------ Notification Settings ------
+    notification_record_start_prop = obs.obs_properties_add_bool(
+        props=notification_props,
+        name=PN.PROP_NOTIFICATION_ON_RECORD_START,
+        description="On record start"
+    )
+    obs.obs_properties_add_path(
+        props=notification_props,
+        name=PN.PROP_NOTIFICATION_ON_RECORD_START_PATH,
+        description="",
+        type=obs.OBS_PATH_FILE,
+        filter=None,
+        default_path="C:\\"
+    )
+
     notification_success_prop = obs.obs_properties_add_bool(
         props=notification_props,
         name=PN.PROP_NOTIFICATION_ON_SUCCESS,
@@ -639,6 +655,7 @@ If you want to disable scheduled restart of replay buffering, set the value to 0
 
     obs.obs_property_set_modified_callback(base_path_prop, check_base_path_callback)
     obs.obs_property_set_modified_callback(filename_format_prop, check_filename_template_callback)
+    obs.obs_property_set_modified_callback(notification_record_start_prop, update_notifications_menu_callback)
     obs.obs_property_set_modified_callback(notification_success_prop, update_notifications_menu_callback)
     obs.obs_property_set_modified_callback(notification_failure_prop, update_notifications_menu_callback)
     obs.obs_property_set_modified_callback(custom_names_list, update_custom_names_callback)
@@ -726,12 +743,15 @@ def update_notifications_menu_callback(p, prop, data):
     Updates notifications settings menu.
     If notification is enabled, shows path widget.
     """
+    record_start_path_prop = obs.obs_properties_get(p, PN.PROP_NOTIFICATION_ON_RECORD_START_PATH)
     success_path_prop = obs.obs_properties_get(p, PN.PROP_NOTIFICATION_ON_SUCCESS_PATH)
     failure_path_prop = obs.obs_properties_get(p, PN.PROP_NOTIFICATION_ON_FAILURE_PATH)
 
+    on_record_start = obs.obs_data_get_bool(data, PN.PROP_NOTIFICATION_ON_RECORD_START)
     on_success = obs.obs_data_get_bool(data, PN.PROP_NOTIFICATION_ON_SUCCESS)
     on_failure = obs.obs_data_get_bool(data, PN.PROP_NOTIFICATION_ON_FAILURE)
 
+    obs.obs_property_set_visible(record_start_path_prop, on_record_start)
     obs.obs_property_set_visible(success_path_prop, on_success)
     obs.obs_property_set_visible(failure_path_prop, on_failure)
     return True
@@ -959,6 +979,14 @@ def add_duplicate_suffix(path: str | Path) -> Path:
 
     return Path(path)
 
+def notify_recording_start():
+    """
+    Plays sound notification if it's enabled in notifications settings.
+    """
+    sound_notifications = obs.obs_data_get_bool(script_settings, PN.GR_NOTIFICATIONS)
+    if sound_notifications and obs.obs_data_get_bool(script_settings, PN.PROP_NOTIFICATION_ON_RECORD_START):
+        path = obs.obs_data_get_string(script_settings, PN.PROP_NOTIFICATION_ON_RECORD_START_PATH)
+        play_sound(path)
 
 def notify(success: bool, clip_path: str):
     """
@@ -1176,6 +1204,25 @@ def restart_replay_buffering_callback():
     Thread(target=restart_replay_buffering, daemon=True).start()
 
 # OBS events callbacks
+def on_recording_started_callback(event):
+    if event is not obs.OBS_FRONTEND_EVENT_RECORDING_STARTED:
+        return
+    notify_recording_start()
+
+def on_recording_stopped_callback(event):
+    if event is not obs.OBS_FRONTEND_EVENT_RECORDING_STOPPED:
+        return
+    
+    _print("------ SAVING RECORDED CLIP ------")
+    try:
+        clip_name, path = save_recording()
+        notify(True, str(path))
+    except:
+        _print("An error occurred while moving file to the new destination.")
+        _print(traceback.format_exc())
+        notify(False, "")
+    _print("-----------------------------------")
+
 def on_buffer_save_callback(event):
     if event is not obs.OBS_FRONTEND_EVENT_REPLAY_BUFFER_SAVED:
         return
@@ -1241,6 +1288,29 @@ def on_buffer_recording_stopped_callback(event):
     obs.timer_remove(restart_replay_buffering_callback)
     exe_history.clear()
 
+def save_recording() -> tuple[str, Path]:
+    dt = datetime.now()
+
+    old_file_path = obs.obs_frontend_get_last_recording()
+    _print(f"Old recording file path: {old_file_path}")
+
+    clip_name = gen_clip_name(1) #Mode 2 and 3 is not implemented
+    ext = old_file_path.split(".")[-1]
+    filename = format_filename(clip_name, dt) + f".{ext}"
+
+    new_folder = Path(get_base_path())
+    if obs.obs_data_get_bool(script_settings, PN.PROP_SAVE_TO_FOLDER):
+        new_folder = new_folder.joinpath(clip_name)
+
+    os.makedirs(str(new_folder), exist_ok=True)
+    new_path = new_folder.joinpath(filename)
+    new_path = add_duplicate_suffix(new_path)
+    _print(f"New clip file path: {new_path}")
+
+    os.rename(old_file_path, str(new_path))
+    _print("Clip file successfully moved.")
+    return clip_name, new_path
+
 
 def save_buffer(mode: int = 0) -> tuple[str, Path]:
     dt = datetime.now()
@@ -1273,6 +1343,7 @@ def script_defaults(s):
     obs.obs_data_set_default_int(s, PN.PROP_FILENAME_CONDITION, 1)
     obs.obs_data_set_default_string(s, PN.PROP_FILENAME_FORMAT, DEFAULT_FILENAME_FORMAT)
     obs.obs_data_set_default_bool(s, PN.PROP_SAVE_TO_FOLDER, True)
+    obs.obs_data_set_default_bool(s, PN.PROP_NOTIFICATION_ON_RECORD_START, False)
     obs.obs_data_set_default_bool(s, PN.PROP_NOTIFICATION_ON_SUCCESS, False)
     obs.obs_data_set_default_bool(s, PN.PROP_NOTIFICATION_ON_FAILURE, False)
     obs.obs_data_set_default_int(s, PN.PROP_RESTART_BUFFER_LOOP, 3600)
@@ -1316,6 +1387,8 @@ def script_load(data):
     obs.obs_frontend_add_event_callback(on_buffer_save_callback)
     obs.obs_frontend_add_event_callback(on_buffer_recording_started_callback)
     obs.obs_frontend_add_event_callback(on_buffer_recording_stopped_callback)
+    obs.obs_frontend_add_event_callback(on_recording_started_callback)
+    obs.obs_frontend_add_event_callback(on_recording_stopped_callback)
     load_hotkeys()
 
     if obs.obs_frontend_replay_buffer_active():
