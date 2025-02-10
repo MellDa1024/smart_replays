@@ -805,7 +805,7 @@ def export_custom_names(*args):
     custom_names_dict = json.loads(obs.obs_data_get_last_json(script_settings))
     custom_names_dict = custom_names_dict.get(PN.PROP_CUSTOM_NAMES_LIST) or DEFAULT_CUSTOM_NAMES
 
-    with open(os.path.join(path, "obs_smartreplays_sutom_names.json"), "w") as f:
+    with open(os.path.join(path, "obs_smartreplays_custom_names.json"), "w") as f:
         f.write(json.dumps(custom_names_dict, ensure_ascii=False))
 
 
